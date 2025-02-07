@@ -67,7 +67,7 @@ class FantiaClub:
 
 
 class FantiaDownloader:
-    def __init__(self, session_arg, chunk_size=1024 * 1024 * 5, dump_metadata=False, parse_for_external_links=False, download_thumb=False, directory=None, quiet=True, continue_on_error=False, use_server_filenames=False, mark_incomplete_posts=False, month_limit=None, exclude_file=None, db_path=None, db_bypass_post_check=False):
+    def __init__(self, session_arg, chunk_size=1024 * 1024 * 5, dump_metadata=False, parse_for_external_links=False, download_thumb=False, directory=None, quiet=True, continue_on_error=False, use_server_filenames=False, mark_incomplete_posts=False, month_limit=None, exclude_file=None, db_path=None, db_bypass_post_check=False, random_delay_range=(0.5, 1), retry_429_wait=180):
         # self.email = email
         # self.password = password
         self.session_arg = session_arg
@@ -85,6 +85,10 @@ class FantiaDownloader:
         self.exclusions = []
         self.db = FantiaDlDatabase(db_path)
         self.db_bypass_post_check = db_bypass_post_check
+        # +++ Add new instance variables +++
+        self.random_delay_range = random_delay_range
+        self.retry_429_wait = retry_429_wait
+        self.consecutive_429 = 0 # Track consecutive 429 errors
 
         self.initialize_session()
         self.login()
@@ -106,12 +110,12 @@ class FantiaDownloader:
         self.session = requests.session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         retries = Retry(
-            total=5,
-            connect=5,
-            read=5,
-            status_forcelist=[429, 500, 502, 503, 504, 507, 508],
+            total=3,
+            connect=3,
+            read=3,
+            status_forcelist=[500, 502, 503, 504, 507, 508], # Removed 429
             backoff_factor=2, # retry delay = {backoff factor} * (2 ** ({retry number} - 1))
-            raise_on_status=True
+            raise_on_status=False
         )
         self.session.mount("http://", HTTPAdapter(max_retries=retries))
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
@@ -190,9 +194,50 @@ class FantiaDownloader:
 
         return post_titles
 
+    def safe_request(self, method, url, **kwargs):
+        """Modified request method with delay and 429 handling"""
+        import random
+        time.sleep(random.uniform(*self.random_delay_range))  # Random delay
+        
+        for attempt in range(3):
+            try:
+                response = self.session.request(method, url, **kwargs)
+                
+                # Handle 429 errors
+                if response.status_code == 429:
+                    self.consecutive_429 += 1
+                    self.output(f"HTTP 429 Too Many Requests (attempt {self.consecutive_429}/3)\n")
+                    
+                    if self.consecutive_429 >= 3:
+                        self.output("Three consecutive 429 errors detected.\n")
+                        choice = input("Continue waiting? (y/n): ").lower()
+                        if choice != 'y':
+                            raise SystemExit("Aborted by user")
+                        self.consecutive_429 = 0  # Reset counter
+                    
+                    self.output(f"Waiting {self.retry_429_wait} seconds...\n")
+                    time.sleep(self.retry_429_wait)
+                    continue
+                    
+                self.consecutive_429 = 0  # Reset counter on success
+                response.raise_for_status()
+                return response
+                
+            except requests.exceptions.RetryError as e:
+                if attempt == 2:  # Final attempt
+                    raise Exception(f"Request failed after 3 attempts: {str(e)}")
+                continue
+
+        raise Exception("Max retries exceeded")
+
+    # +++ Replace all self.session.get calls with safe_request +++
+    # Example modification in one method - apply same pattern to all others
+
     def download_fanclub_metadata(self, fanclub):
         """Download fanclub header, icon, and custom background."""
-        response = self.session.get(FANCLUB_API.format(fanclub.id))
+        #response = self.session.get(FANCLUB_API.format(fanclub.id))
+        """Modified with safe_request"""
+        response = self.safe_request('GET', FANCLUB_API.format(fanclub.id))
         response.raise_for_status()
         fanclub_json = json.loads(response.text)
 
