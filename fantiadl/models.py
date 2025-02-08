@@ -110,9 +110,9 @@ class FantiaDownloader:
         self.session = requests.session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         retries = Retry(
-            total=3,
-            connect=3,
-            read=3,
+            total=20,
+            connect=20,
+            read=20,
             status_forcelist=[500, 502, 503, 504, 507, 508], # Removed 429
             backoff_factor=2, # retry delay = {backoff factor} * (2 ** ({retry number} - 1))
             raise_on_status=False
